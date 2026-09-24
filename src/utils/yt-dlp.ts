@@ -45,6 +45,10 @@ const exePath = nodePath.resolve(scriptsPath, filename);
 function args(url: string, options: Partial<YTFlags>): string[] {
 	const optArgs: string[] = [];
 	
+	// Make deno a visible runtime for yt-dlp
+	optArgs.push("--js-runtimes")
+	optArgs.push("deno:/root/.deno/bin/deno");
+
 	// Add cookies file if configured
 	if (config.ytdlpCookiesPath && existsSync(config.ytdlpCookiesPath)) {
 		optArgs.push('--cookies');
