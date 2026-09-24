@@ -22,7 +22,7 @@ RUN apt-get update && apt-get install -y \
     rm -rf /var/lib/apt/lists/*
 
 # Install the deno js runtime (for yt-dlp)
-RUN curl -fsSL https://deno.land/install.sh | sh -y
+RUN curl -fsSL https://deno.land/install.sh | sh -s -- -y
 
 # Copy package.json
 COPY package.json ./
