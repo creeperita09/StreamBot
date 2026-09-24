@@ -1,4 +1,4 @@
-import { Client, Message } from "discord.js-selfbot-v13";
+import { Client, Message, StageChannel } from "discord.js-selfbot-v13";
 import { Streamer, Utils, prepareStream, playStream } from "@dank074/discord-video-stream";
 import fs from 'fs';
 import config from "../config.js";
@@ -8,6 +8,13 @@ import { getVideoParams } from "../utils/ffmpeg.js";
 import logger from '../utils/logger.js';
 import { DiscordUtils, ErrorUtils } from '../utils/shared.js';
 import { QueueItem, StreamStatus } from '../types/index.js';
+
+class StageSpeakError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = 'StageSpeakError';
+	}
+}
 
 export class StreamingService {
  	private streamer: Streamer;
@@ -194,6 +201,78 @@ export class StreamingService {
 		if (!this.streamer.voiceConnection) {
 			throw new Error('Voice connection is not established');
 		}
+
+		// Stage channels: become a speaker (or request to) before streaming
+		await this.ensureStageSpeaker(guildId, channelId);
+	}
+
+	private async waitForCondition(check: () => boolean, timeoutMs: number, intervalMs: number = 250): Promise<boolean> {
+		const start = Date.now();
+		while (Date.now() - start < timeoutMs) {
+			if (check()) return true;
+			await new Promise(resolve => setTimeout(resolve, intervalMs));
+		}
+		return check();
+	}
+
+	// If the target channel is a stage channel, make sure the bot is a speaker before streaming. Flow:
+	private async ensureStageSpeaker(guildId: string, channelId: string): Promise<void> {
+		const client = this.streamer.client;
+		const guild = client.guilds.cache.get(guildId);
+		if (!guild) return;
+
+		const channel = await guild.channels.fetch(channelId).catch(() => null);
+		if (!channel || channel.type !== 'GUILD_STAGE_VOICE') return; // normal voice channel, nothing to do
+
+		const stage = channel as StageChannel;
+		const me = guild.members.me ?? await guild.members.fetch(client.user!.id);
+
+		// Wait for our own voice state to show up in the stage channel
+		const inChannel = await this.waitForCondition(() => me.voice?.channelId === channelId, 10000);
+		if (!inChannel) {
+			throw new StageSpeakError('Joined the stage channel but never received a voice state update for it.');
+		}
+
+		const isSpeaker = () => !!me.voice && me.voice.suppress === false;
+		if (isSpeaker()) {
+			logger.info('Already a speaker in the stage channel.');
+			return;
+		}
+
+		const perms = stage.permissionsFor(me);
+		const canSpeakDirectly = !!perms?.has('MUTE_MEMBERS');
+		const canRequest = !!perms?.has('REQUEST_TO_SPEAK');
+
+		if (canSpeakDirectly) {
+			logger.info('Has Mute Members permission in stage channel, becoming a speaker.');
+			try {
+				await me.voice.setSuppressed(false);
+			} catch (err: any) {
+				throw new StageSpeakError(`Failed to become a speaker in the stage channel: ${err?.message || err}`);
+			}
+			if (!(await this.waitForCondition(isSpeaker, 10000))) {
+				throw new StageSpeakError('Tried to become a speaker in the stage channel but it did not take effect.');
+			}
+			return;
+		}
+
+		if (!canRequest) {
+			throw new StageSpeakError('Missing permissions in the stage channel: need Mute Members (to speak directly) or Request to Speak.');
+		}
+
+		logger.info(`Requesting to speak in the stage channel, waiting up to ${config.stageSpeakTimeoutSec}s for approval.`);
+		try {
+			await me.voice.setRequestToSpeak(true);
+		} catch (err: any) {
+			throw new StageSpeakError(`Failed to request to speak in the stage channel: ${err?.message || err}`);
+		}
+
+		const approved = await this.waitForCondition(isSpeaker, config.stageSpeakTimeoutSec * 1000);
+		if (!approved) {
+			await me.voice.setRequestToSpeak(false).catch(() => {});
+			throw new StageSpeakError(`Request to speak was not accepted within ${config.stageSpeakTimeoutSec}s.`);
+		}
+		logger.info('Request to speak accepted.');
 	}
 
 	private setupStreamConfiguration(videoParams?: { width: number, height: number, fps?: number, bitrate?: number }): any {
@@ -393,6 +472,9 @@ export class StreamingService {
 			await this.executeStreamWorkflow(inputForFfmpeg, streamOpts, message, title || videoSource, videoSource);
 		} catch (error) {
 			await ErrorUtils.handleError(error, `playing video: ${title || videoSource}`);
+			if (error instanceof StageSpeakError) {
+				await DiscordUtils.sendError(message, error.message).catch(e => logger.error('Failed to send stage error message:', e));
+			}
 			if (this.controller && !this.controller.signal.aborted) this.controller.abort();
 			this.markVideoAsFailed(videoSource);
 		} finally {

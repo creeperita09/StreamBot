@@ -212,6 +212,9 @@ COMMAND_CHANNEL_ID="COMMAND_CHANNEL_ID"
 # Voice/video channel where bot will stream
 VIDEO_CHANNEL_ID="VIDEO_CHANNEL_ID"
 
+# Stage channels only: seconds to wait for a moderator to accept the bot's request to speak before giving up
+STAGE_SPEAK_TIMEOUT_SEC="60"
+
 # Admin user IDs - comma-separated or JSON array format
 # Examples:
 #   ADMIN_IDS="123456789,987654321"
