@@ -45,9 +45,11 @@ const exePath = nodePath.resolve(scriptsPath, filename);
 function args(url: string, options: Partial<YTFlags>): string[] {
 	const optArgs: string[] = [];
 	
-	// Make deno a visible runtime for yt-dlp
+	// Make deno a visible runtime for yt-dlp. Prefer an explicit path via
+	// DENO_EXECUTABLE_PATH if set, otherwise let yt-dlp resolve "deno" from
+	// PATH (this matches how the Dockerfile installs it via DENO_INSTALL).
 	optArgs.push("--js-runtimes")
-	optArgs.push("deno:/root/.deno/bin/deno");
+	optArgs.push(`deno:${process.env.DENO_EXECUTABLE_PATH || "deno"}`);
 
 	// Add cookies file if configured
 	if (config.ytdlpCookiesPath && existsSync(config.ytdlpCookiesPath)) {

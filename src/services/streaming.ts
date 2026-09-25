@@ -181,7 +181,7 @@ export class StreamingService {
 		}
 	}
 
-	private async ensureVoiceConnection(guildId: string, channelId: string, title?: string): Promise<void> {
+	private async ensureVoiceConnection(guildId: string, channelId: string, signal: AbortSignal, title?: string): Promise<void> {
 		// Only join voice if not already connected
 		if (!this.streamStatus.joined || !this.streamer.voiceConnection) {
 			await this.streamer.joinVoice(guildId, channelId);
@@ -196,6 +196,7 @@ export class StreamingService {
 
 		// Wait for voice connection to be fully ready
 		await new Promise(resolve => setTimeout(resolve, 2000));
+		if (signal.aborted) return;
 
 		// Verify voice connection exists
 		if (!this.streamer.voiceConnection) {
@@ -203,76 +204,96 @@ export class StreamingService {
 		}
 
 		// Stage channels: become a speaker (or request to) before streaming
-		await this.ensureStageSpeaker(guildId, channelId);
+		await this.ensureStageSpeaker(guildId, channelId, signal);
 	}
 
-	private async waitForCondition(check: () => boolean, timeoutMs: number, intervalMs: number = 250): Promise<boolean> {
+	private async waitForCondition(check: () => boolean, timeoutMs: number, signal?: AbortSignal, intervalMs: number = 250): Promise<boolean> {
 		const start = Date.now();
 		while (Date.now() - start < timeoutMs) {
+			if (signal?.aborted) return false;
 			if (check()) return true;
 			await new Promise(resolve => setTimeout(resolve, intervalMs));
 		}
-		return check();
+		return signal?.aborted ? false : check();
 	}
 
 	// If the target channel is a stage channel, make sure the bot is a speaker before streaming. Flow:
-	private async ensureStageSpeaker(guildId: string, channelId: string): Promise<void> {
-		const client = this.streamer.client;
-		const guild = client.guilds.cache.get(guildId);
-		if (!guild) return;
-
-		const channel = await guild.channels.fetch(channelId).catch(() => null);
-		if (!channel || channel.type !== 'GUILD_STAGE_VOICE') return; // normal voice channel, nothing to do
-
-		const stage = channel as StageChannel;
-		const me = guild.members.me ?? await guild.members.fetch(client.user!.id);
-
-		// Wait for our own voice state to show up in the stage channel
-		const inChannel = await this.waitForCondition(() => me.voice?.channelId === channelId, 10000);
-		if (!inChannel) {
-			throw new StageSpeakError('Joined the stage channel but never received a voice state update for it.');
-		}
-
-		const isSpeaker = () => !!me.voice && me.voice.suppress === false;
-		if (isSpeaker()) {
-			logger.info('Already a speaker in the stage channel.');
-			return;
-		}
-
-		const perms = stage.permissionsFor(me);
-		const canSpeakDirectly = !!perms?.has('MUTE_MEMBERS');
-		const canRequest = !!perms?.has('REQUEST_TO_SPEAK');
-
-		if (canSpeakDirectly) {
-			logger.info('Has Mute Members permission in stage channel, becoming a speaker.');
-			try {
-				await me.voice.setSuppressed(false);
-			} catch (err: any) {
-				throw new StageSpeakError(`Failed to become a speaker in the stage channel: ${err?.message || err}`);
-			}
-			if (!(await this.waitForCondition(isSpeaker, 10000))) {
-				throw new StageSpeakError('Tried to become a speaker in the stage channel but it did not take effect.');
-			}
-			return;
-		}
-
-		if (!canRequest) {
-			throw new StageSpeakError('Missing permissions in the stage channel: need Mute Members (to speak directly) or Request to Speak.');
-		}
-
-		logger.info(`Requesting to speak in the stage channel, waiting up to ${config.stageSpeakTimeoutSec}s for approval.`);
+	private async ensureStageSpeaker(guildId: string, channelId: string, signal: AbortSignal): Promise<void> {
 		try {
-			await me.voice.setRequestToSpeak(true);
-		} catch (err: any) {
-			throw new StageSpeakError(`Failed to request to speak in the stage channel: ${err?.message || err}`);
-		}
+			const client = this.streamer.client;
+			const guild = client.guilds.cache.get(guildId);
+			if (!guild) return;
 
-		const approved = await this.waitForCondition(isSpeaker, config.stageSpeakTimeoutSec * 1000);
-		if (!approved) {
-			await me.voice.setRequestToSpeak(false).catch(() => {});
-			throw new StageSpeakError(`Request to speak was not accepted within ${config.stageSpeakTimeoutSec}s.`);
+			let channel;
+			try {
+				channel = await guild.channels.fetch(channelId);
+			} catch (err: any) {
+				throw new StageSpeakError(`Failed to fetch the target channel: ${err?.message || err}`);
+			}
+			if (!channel) {
+				throw new StageSpeakError('Target channel could not be found.');
+			}
+			if (channel.type !== 'GUILD_STAGE_VOICE') return; // normal voice channel, nothing to do
+
+			const stage = channel as StageChannel;
+			const me = guild.members.me ?? await guild.members.fetch(client.user!.id);
+
+			// Wait for our own voice state to show up in the stage channel
+			const inChannel = await this.waitForCondition(() => me.voice?.channelId === channelId, 10000, signal);
+			if (signal.aborted) return;
+			if (!inChannel) {
+				throw new StageSpeakError('Joined the stage channel but never received a voice state update for it.');
+			}
+
+			const isSpeaker = () => !!me.voice && me.voice.suppress === false;
+			if (isSpeaker()) {
+				logger.info('Already a speaker in the stage channel.');
+				return;
+			}
+
+			const perms = stage.permissionsFor(me);
+			const canSpeakDirectly = !!perms?.has('MUTE_MEMBERS');
+			const canRequest = !!perms?.has('REQUEST_TO_SPEAK');
+
+			if (canSpeakDirectly) {
+				logger.info('Has Mute Members permission in stage channel, becoming a speaker.');
+				try {
+					await me.voice.setSuppressed(false);
+				} catch (err: any) {
+					throw new StageSpeakError(`Failed to become a speaker in the stage channel: ${err?.message || err}`);
+				}
+				if (signal.aborted) return;
+				if (!(await this.waitForCondition(isSpeaker, 10000, signal))) {
+					if (signal.aborted) return;
+					throw new StageSpeakError('Tried to become a speaker in the stage channel but it did not take effect.');
+				}
+				return;
+			}
+
+			if (!canRequest) {
+				throw new StageSpeakError('Missing permissions in the stage channel: need Mute Members (to speak directly) or Request to Speak.');
+			}
+
+			logger.info(`Requesting to speak in the stage channel, waiting up to ${config.stageSpeakTimeoutSec}s for approval.`);
+			try {
+				await me.voice.setRequestToSpeak(true);
+			} catch (err: any) {
+				throw new StageSpeakError(`Failed to request to speak in the stage channel: ${err?.message || err}`);
+			}
+
+			if (signal.aborted) return;
+			const approved = await this.waitForCondition(isSpeaker, config.stageSpeakTimeoutSec * 1000, signal);
+			if (signal.aborted) return;
+			if (!approved) {
+				await me.voice.setRequestToSpeak(false).catch(() => {});
+				throw new StageSpeakError(`Request to speak was not accepted within ${config.stageSpeakTimeoutSec}s.`);
+			}
+			logger.info('Request to speak accepted.');
+		} catch (err) {
+			if (err instanceof StageSpeakError) throw err;
+			if (signal.aborted) return;
+			throw new StageSpeakError(`Unexpected error while preparing the stage speaker: ${err instanceof Error ? err.message : String(err)}`);
 		}
-		logger.info('Request to speak accepted.');
 	}
 
 	private setupStreamConfiguration(videoParams?: { width: number, height: number, fps?: number, bitrate?: number }): any {
@@ -427,7 +448,6 @@ export class StreamingService {
 	}
 
 	private async executeStreamWorkflow(input: any, options: any, message: Message, title: string, source: string): Promise<void> {
-		this.controller = new AbortController();
 		await this.executeStream(input, options, message, title, source);
 	}
 
@@ -465,7 +485,13 @@ export class StreamingService {
 			const { inputForFfmpeg, tempFilePath } = await this.prepareVideoSource(message, videoSource, title);
 			tempFile = tempFilePath;
 
-			await this.ensureVoiceConnection(guildId, channelId, title);
+			// Create the controller before the stage-speaker flow so that a
+			// stop/skip during moderator approval can abort the wait.
+			this.controller = new AbortController();
+			await this.ensureVoiceConnection(guildId, channelId, this.controller.signal, title);
+			if (this.controller.signal.aborted) {
+				return;
+			}
 			await DiscordUtils.sendPlaying(message, title || videoSource);
 
 			const streamOpts = this.setupStreamConfiguration(videoParams);

@@ -86,7 +86,7 @@ export default {
 	height: process.env.STREAM_HEIGHT ? parseInt(process.env.STREAM_HEIGHT) : 720,
 	fps: process.env.STREAM_FPS ? parseInt(process.env.STREAM_FPS) : 30,
 	bitrateKbps: process.env.STREAM_BITRATE_KBPS ? parseInt(process.env.STREAM_BITRATE_KBPS) : 1000,
-	stageSpeakTimeoutSec: process.env.STAGE_SPEAK_TIMEOUT_SEC ? parseInt(process.env.STAGE_SPEAK_TIMEOUT_SEC) : 60,
+	stageSpeakTimeoutSec: process.env.STAGE_SPEAK_TIMEOUT_SEC && !Number.isNaN(parseInt(process.env.STAGE_SPEAK_TIMEOUT_SEC)) ? parseInt(process.env.STAGE_SPEAK_TIMEOUT_SEC) : 60,
 	maxBitrateKbps: process.env.STREAM_MAX_BITRATE_KBPS ? parseInt(process.env.STREAM_MAX_BITRATE_KBPS) : 2500,
 	maxWidth: process.env.STREAM_MAX_WIDTH ? parseInt(process.env.STREAM_MAX_WIDTH) : 0,
 	maxHeight: process.env.STREAM_MAX_HEIGHT ? parseInt(process.env.STREAM_MAX_HEIGHT) : 0,

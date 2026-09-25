@@ -11,6 +11,7 @@ services:
       COMMAND_CHANNEL_ID: "" # The ID of the Discord channel where your self-bot will respond to commands
       VIDEO_CHANNEL_ID: "" # The ID of the Discord voice/video channel where your self-bot will stream videos
       ADMIN_IDS: ["YOUR_USER_ID_HERE"] # A list of Discord user IDs that are considered administrators (comma-separated or JSON array format)
+      STAGE_SPEAK_TIMEOUT_SEC: "60" # Stage channels only: seconds to wait for a moderator to accept the bot's request to speak before giving up
       # General options
       VIDEOS_DIR: "./videos" # The local path where you store video files
       PREVIEW_CACHE_DIR: "./tmp/preview-cache" # The local path where your self-bot will cache video preview thumbnails
